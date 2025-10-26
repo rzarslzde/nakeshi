@@ -32,9 +32,103 @@
     .badge { background: rgba(154,230,180,.12); border: 1px solid rgba(154,230,180,.25); }
     .bar { height: 10px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
     .bar>span { display:block; height:100%; background: linear-gradient(90deg,#86efac,#4ade80); }
+
+    /* Tiny timer styles */
+    .mini-panel {
+      background: rgba(0,0,0,.35);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.12);
+    }
+    .mini-heat {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.08);
+      overflow: hidden;
+    }
+    .mini-heat > span {
+      display:block;
+      height:100%;
+      width:0%;
+      /* color will be controlled via inline style (hsl) */
+      background: currentColor;
+    }
+    .confetti {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 60;
+    }
   </style>
 </head>
 <body class="h-full text-white">
+  <!-- Tiny Daily Timer (top-left) -->
+  <aside class="fixed top-3 left-3 z-50 text-[11px] sm:text-xs">
+    <div class="mini-panel rounded-lg px-3 py-2 shadow-lg">
+      <div class="flex items-center gap-2">
+        <span class="opacity-80">🕒 Daily Timer</span>
+        <button id="miniUseNow"
+                class="ml-auto px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/30">
+          Use current time (+9h)
+        </button>
+        <button id="miniToggleEdit"
+                class="px-2 py-0.5 rounded bg-white/10 hover:bg-white/15 border border-white/15">
+          Edit
+        </button>
+      </div>
+
+      <div class="mt-1 mono">
+        <div class="flex items-center gap-2">
+          <span class="opacity-70">Remaining:</span>
+          <span id="miniRemaining" class="font-semibold">—</span>
+        </div>
+        <div class="mt-1 mini-heat" title="Progress">
+          <span id="miniHeatFill" style="color:hsl(0 90% 55%); width:0%"></span>
+        </div>
+        <div class="mt-1 flex items-center justify-between opacity-70">
+          <span id="miniStartInfo">Start: —</span>
+          <span id="miniEndInfo">End: —</span>
+        </div>
+      </div>
+
+      <!-- Edit panel -->
+      <form id="miniEdit" class="hidden mt-2 grid grid-cols-1 gap-2">
+        <div class="grid grid-cols-2 gap-2">
+          <label class="flex flex-col">
+            <span class="opacity-70 mb-1">Start</span>
+            <input id="miniStartInput" type="datetime-local"
+                   class="px-2 py-1 rounded bg-white/10 border border-white/15 focus:outline-none"
+                   />
+          </label>
+          <label class="flex flex-col">
+            <span class="opacity-70 mb-1">Duration (hours)</span>
+            <input id="miniDurInput" type="number" step="0.25" min="0" value="9"
+                   class="px-2 py-1 rounded bg-white/10 border border-white/15 focus:outline-none"
+                   />
+          </label>
+        </div>
+        <div class="grid grid-cols-1">
+          <label class="flex flex-col">
+            <span class="opacity-70 mb-1">…or set End time</span>
+            <input id="miniEndInput" type="datetime-local"
+                   class="px-2 py-1 rounded bg-white/10 border border-white/15 focus:outline-none"
+                   />
+          </label>
+        </div>
+        <div class="flex items-center justify-end gap-2">
+          <button type="button" id="miniClear"
+                  class="px-2 py-1 rounded bg-white/10 hover:bg-white/15 border border-white/15">
+            Clear
+          </button>
+          <button type="submit"
+                  class="px-2 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/30">
+            Start
+          </button>
+        </div>
+      </form>
+    </div>
+  </aside>
+
   <main class="min-h-screen flex items-center justify-center p-6">
     <div class="w-full max-w-3xl">
       <!-- Header -->
@@ -187,6 +281,190 @@
       }
 
       loadConfig();
+    })();
+
+    /* ---------------------------
+       Tiny Daily Timer (top-left)
+       --------------------------- */
+    (function() {
+      const { DateTime, Duration } = luxon;
+      const $ = (id) => document.getElementById(id);
+
+      const useNowBtn   = $('miniUseNow');
+      const toggleEdit  = $('miniToggleEdit');
+      const editForm    = $('miniEdit');
+      const startInput  = $('miniStartInput');
+      const durInput    = $('miniDurInput');
+      const endInput    = $('miniEndInput');
+      const clearBtn    = $('miniClear');
+
+      const remainingEl = $('miniRemaining');
+      const heatFill    = $('miniHeatFill');
+      const startInfo   = $('miniStartInfo');
+      const endInfo     = $('miniEndInfo');
+
+      let miniStart = null;
+      let miniEnd   = null;
+      let finished  = false;
+
+      function hslFromRatio(r) {
+        // r: 0 (start, red) -> 1 (end, green)
+        const hue = Math.max(0, Math.min(120, Math.round(r * 120)));
+        return `hsl(${hue} 90% 55%)`;
+      }
+
+      function fmtHHMMSS(dur) {
+        const s = Math.max(0, Math.floor(dur.as('seconds')));
+        const hh = String(Math.floor(s / 3600)).padStart(2,'0');
+        const mm = String(Math.floor((s % 3600) / 60)).padStart(2,'0');
+        const ss = String(s % 60).padStart(2,'0');
+        return `${hh}:${mm}:${ss}`;
+      }
+
+      function updateMini() {
+        if (!miniStart || !miniEnd) {
+          remainingEl.textContent = '—';
+          heatFill.style.width = '0%';
+          heatFill.style.color = hslFromRatio(0);
+          startInfo.textContent = 'Start: —';
+          endInfo.textContent = 'End: —';
+          return;
+        }
+
+        const now = DateTime.now();
+
+        const total = miniEnd.diff(miniStart, 'seconds').seconds;
+        const passed = now.diff(miniStart, 'seconds').seconds;
+        const ratio = Math.max(0, Math.min(1, total > 0 ? (passed / total) : 1));
+        const remaining = miniEnd.diff(now);
+        const remainingSec = remaining.as('seconds');
+
+        // Heat color + width
+        heatFill.style.color = hslFromRatio(ratio);
+        heatFill.style.width = (ratio * 100).toFixed(2) + '%';
+
+        // Labels
+        startInfo.textContent = `Start: ${miniStart.toFormat("yyyy-LL-dd HH:mm")}`;
+        endInfo.textContent   = `End: ${miniEnd.toFormat("yyyy-LL-dd HH:mm")}`;
+
+        if (remainingSec <= 0) {
+          remainingEl.textContent = '00:00:00';
+          if (!finished) {
+            finished = true;
+            celebrate();
+          }
+          return;
+        }
+
+        finished = false;
+        remainingEl.textContent = fmtHHMMSS(remaining.shiftTo('seconds'));
+      }
+
+      // Confetti celebration (emoji burst)
+      function celebrate() {
+        const layer = document.createElement('div');
+        layer.className = 'confetti';
+        document.body.appendChild(layer);
+
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+        const count = 120;
+        const emojis = ['🎉','🎊','✨','🟩','🟥','🟨','⭐'];
+
+        const pieces = [];
+        for (let i=0;i<count;i++){
+          const span = document.createElement('span');
+          span.textContent = emojis[Math.floor(Math.random()*emojis.length)];
+          span.style.position = 'absolute';
+          span.style.left = (Math.random()*W) + 'px';
+          span.style.top  = (-20 - Math.random()*100) + 'px';
+          span.style.fontSize = (12 + Math.random()*20) + 'px';
+          span.style.transform = `rotate(${Math.random()*360}deg)`;
+          layer.appendChild(span);
+          pieces.push({
+            el: span,
+            x: parseFloat(span.style.left),
+            y: parseFloat(span.style.top),
+            vy: 2 + Math.random()*4,
+            vx: -2 + Math.random()*4,
+            rot: Math.random()*360,
+            vr: -4 + Math.random()*8,
+            life: 0,
+            lifeMax: 180 + Math.random()*120
+          });
+        }
+
+        let raf;
+        function step(){
+          for (const p of pieces){
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.05; // gravity
+            p.rot += p.vr;
+            p.life++;
+            p.el.style.transform = `translate(${p.x}px, ${p.y}px) rotate(${p.rot}deg)`;
+            p.el.style.opacity = String(Math.max(0, 1 - p.life / p.lifeMax));
+          }
+          if (pieces.some(p => p.life < p.lifeMax && p.y < H+40)) {
+            raf = requestAnimationFrame(step);
+          } else {
+            cancelAnimationFrame(raf);
+            layer.remove();
+          }
+        }
+        raf = requestAnimationFrame(step);
+      }
+
+      // Controls
+      useNowBtn.addEventListener('click', () => {
+        const now = DateTime.now();
+        miniStart = now;
+        miniEnd = now.plus({ hours: 9 });
+        startInput.value = now.toFormat("yyyy-LL-dd'T'HH:mm");
+        durInput.value = '9';
+        endInput.value = miniEnd.toFormat("yyyy-LL-dd'T'HH:mm");
+        finished = false;
+        updateMini();
+      });
+
+      toggleEdit.addEventListener('click', () => {
+        editForm.classList.toggle('hidden');
+      });
+
+      clearBtn.addEventListener('click', () => {
+        miniStart = null;
+        miniEnd   = null;
+        startInput.value = '';
+        durInput.value   = '9';
+        endInput.value   = '';
+        finished = false;
+        updateMini();
+      });
+
+      editForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+
+        const startVal = startInput.value ? DateTime.fromISO(startInput.value) : DateTime.now();
+        let endVal = endInput.value ? DateTime.fromISO(endInput.value) : null;
+        const durVal = parseFloat(durInput.value || '9');
+
+        if (!endVal || !endVal.isValid) {
+          // compute end from start + duration
+          endVal = startVal.plus(Duration.fromObject({ hours: isNaN(durVal) ? 9 : durVal }));
+        }
+
+        if (!startVal.isValid || !endVal.isValid) return;
+
+        miniStart = startVal;
+        miniEnd = endVal;
+        finished = false;
+        updateMini();
+        editForm.classList.add('hidden');
+      });
+
+      // Tick
+      updateMini();
+      setInterval(updateMini, 1000);
     })();
   </script>
 </body>
